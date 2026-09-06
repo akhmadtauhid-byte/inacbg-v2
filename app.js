@@ -335,29 +335,95 @@ function renderRedFlags(input, aiResult){
 }
 
 // ---------------------------------------------------------------------
-// UNGGAH GAMBAR (sama seperti v1 — base64 di memori, dikirim ke gateway,
-// TIDAK pernah ditulis ke database)
+// UNGGAH DOKUMEN (foto per-halaman ATAU PDF multi-halaman — base64 di
+// memori, dikirim ke gateway, TIDAK pernah ditulis ke database)
+// Tidak dibatasi ke jumlah lembar kecil: satu berkas rekam medis pasien
+// bisa sampai puluhan halaman. Foto dikompres otomatis di browser (resize
+// + JPEG) supaya total ukuran yang dikirim ke AI tetap wajar; PDF dikirim
+// apa adanya (mendukung banyak halaman sekaligus dalam satu file).
 // ---------------------------------------------------------------------
-let uploadedImages = []; // {name, mediaType, base64}
-function handleImageUpload(evt){
-  const files = Array.from(evt.target.files || []).slice(0, 4 - uploadedImages.length);
-  files.forEach(file => {
-    if(file.size > 5*1024*1024){ alert(`${file.name} lebih dari 5MB, dilewati.`); return; }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const base64 = reader.result.split(',')[1];
-      uploadedImages.push({name:file.name, mediaType:file.type, base64});
-      renderImgGallery();
+let uploadedImages = []; // {name, mediaType, base64} — mediaType "image/jpeg" (hasil kompres) atau "application/pdf"
+const MAX_DOC_FILES = 40; // batas praktis jumlah file dalam satu sesi analisa (jauh di atas kebutuhan ~30 lembar)
+const MAX_RAW_IMAGE_BYTES = 15*1024*1024; // ukuran foto asli sebelum dikompres (hasil kamera HP bisa besar)
+const MAX_PDF_BYTES = 25*1024*1024; // PDF tidak dikompres di browser, jadi batasnya lebih ketat
+const WARN_TOTAL_BYTES = 20*1024*1024; // total gabungan semua file — di atas ini AI bisa menolak/lambat
+
+function compressImageFile(file, maxDim = 1400, quality = 0.72){
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if(width > maxDim || height > maxDim){
+        if(width >= height){ height = Math.round(height * maxDim / width); width = maxDim; }
+        else { width = Math.round(width * maxDim / height); height = maxDim; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      URL.revokeObjectURL(url);
+      resolve({ base64: canvas.toDataURL('image/jpeg', quality).split(',')[1], mediaType: 'image/jpeg' });
     };
+    img.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
+    img.src = url;
+  });
+}
+
+function readFileAsBase64(file){
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
     reader.readAsDataURL(file);
   });
+}
+
+async function handleImageUpload(evt){
+  const files = Array.from(evt.target.files || []).slice(0, MAX_DOC_FILES - uploadedImages.length);
+  if((evt.target.files || []).length > files.length){
+    alert(`Maksimal ${MAX_DOC_FILES} file per sesi analisa. Sebagian file tidak diproses — lakukan analisa bertahap kalau berkasnya lebih banyak dari itu.`);
+  }
+  for(const file of files){
+    const isImage = file.type.startsWith('image/');
+    const isPdf = file.type === 'application/pdf';
+    if(!isImage && !isPdf){ alert(`${file.name} bukan gambar atau PDF, dilewati.`); continue; }
+    if(isImage && file.size > MAX_RAW_IMAGE_BYTES){ alert(`${file.name} lebih dari ${(MAX_RAW_IMAGE_BYTES/1024/1024).toFixed(0)}MB, dilewati.`); continue; }
+    if(isPdf && file.size > MAX_PDF_BYTES){ alert(`${file.name} lebih dari ${(MAX_PDF_BYTES/1024/1024).toFixed(0)}MB, dilewati.`); continue; }
+    try{
+      if(isImage){
+        const { base64, mediaType } = await compressImageFile(file);
+        uploadedImages.push({ name: file.name, mediaType, base64 });
+      } else {
+        const base64 = await readFileAsBase64(file);
+        uploadedImages.push({ name: file.name, mediaType: file.type, base64 });
+      }
+      renderImgGallery();
+    }catch(e){
+      console.error(e);
+      alert(`Gagal memproses ${file.name}, dilewati.`);
+    }
+  }
   evt.target.value = '';
 }
+
 function removeImage(idx){ uploadedImages.splice(idx,1); renderImgGallery(); }
+
 function renderImgGallery(){
-  document.getElementById('imgGallery').innerHTML = uploadedImages.map((img,i) => `
-    <div class="thumb"><img src="data:${img.mediaType};base64,${img.base64}"><button class="rm" onclick="removeImage(${i})">×</button></div>
-  `).join('');
+  const totalBytes = uploadedImages.reduce((s,img) => s + Math.ceil(img.base64.length*0.75), 0);
+  const totalMB = (totalBytes/1024/1024).toFixed(1);
+  const thumbs = uploadedImages.map((img,i) => {
+    const inner = img.mediaType === 'application/pdf'
+      ? `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;flex-direction:column;background:var(--paper-2);font-size:9px;text-align:center;padding:4px;overflow:hidden;">📄<span style="word-break:break-all;">${esc(img.name)}</span></div>`
+      : `<img src="data:${img.mediaType};base64,${img.base64}">`;
+    return `<div class="thumb">${inner}<button class="rm" onclick="removeImage(${i})">×</button></div>`;
+  }).join('');
+  const summary = uploadedImages.length
+    ? `<div style="width:100%;font-size:11px;color:#7A8B9C;margin-top:4px;">${uploadedImages.length} file terlampir · ~${totalMB} MB total (foto sudah dikompres otomatis)</div>`
+    : '';
+  const warn = totalBytes > WARN_TOTAL_BYTES
+    ? `<div class="err" style="width:100%;margin-top:6px;">Total ukuran dokumen sekitar ${totalMB}MB — ini cukup besar dan berisiko lambat/gagal diproses AI. Kalau berkasnya sangat banyak, pertimbangkan membagi jadi 2 kali analisa (mis. per episode rawat) daripada satu kali unggah semuanya.</div>`
+    : '';
+  document.getElementById('imgGallery').innerHTML = thumbs + summary + warn;
 }
 // ---------------------------------------------------------------------
 // ANALISA AI — lewat gateway RS, bukan langsung ke Anthropic
@@ -395,11 +461,36 @@ function readCaseInput(){
   };
 }
 
+function applyEkstraksiOtomatis(ekstraksi){
+  if(!ekstraksi) return false;
+  let filledAny = false;
+  const setIfEmpty = (id, val) => {
+    if(val===undefined || val===null || val==='') return;
+    const el = document.getElementById(id);
+    if(el && !el.value){ el.value = val; filledAny = true; }
+  };
+  setIfEmpty('f_dx_utama', ekstraksi.diagnosis_utama_teks);
+  setIfEmpty('f_dx_sek', ekstraksi.diagnosis_sekunder_teks);
+  setIfEmpty('f_tindakan', ekstraksi.tindakan_teks);
+  setIfEmpty('f_dpjp', ekstraksi.dpjp);
+  setIfEmpty('f_tgl_masuk', ekstraksi.tgl_masuk);
+  setIfEmpty('f_tgl_keluar', ekstraksi.tgl_keluar);
+  setIfEmpty('f_usia', ekstraksi.usia);
+  setIfEmpty('f_jk', ekstraksi.jenis_kelamin);
+  return filledAny;
+}
+
 async function runAnalysis(){
   const errBox = document.getElementById('errBox');
+  const autoFillBox = document.getElementById('autoFillNotice');
   errBox.innerHTML = '';
+  if(autoFillBox) autoFillBox.innerHTML = '';
   const input = readCaseInput();
-  if(!input.dx_utama){ errBox.innerHTML = '<div class="err">Diagnosis utama wajib diisi.</div>'; return; }
+  if(!input.dx_utama && uploadedImages.length === 0){
+    errBox.innerHTML = '<div class="err">Isi Diagnosis Utama secara manual, ATAU unggah dokumen pendukung (foto/scan atau PDF) di bawah supaya AI bisa membaca diagnosisnya secara otomatis.</div>';
+    return;
+  }
+  const dxDiisiManual = !!input.dx_utama;
 
   const tarifAktual = parseFloat(document.getElementById('f_tarif_aktual').value) || null;
   const tarifRiil = parseFloat(document.getElementById('f_tarif_riil').value) || null;
@@ -412,7 +503,13 @@ async function runAnalysis(){
   const systemPrompt = buildSystemPrompt();
   const userPrompt = buildUserPrompt(input);
   const contentBlocks = [];
-  uploadedImages.forEach(img => contentBlocks.push({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.base64 } }));
+  uploadedImages.forEach(img => {
+    if(img.mediaType === 'application/pdf'){
+      contentBlocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: img.base64 } });
+    } else {
+      contentBlocks.push({ type: "image", source: { type: "base64", media_type: img.mediaType, data: img.base64 } });
+    }
+  });
   contentBlocks.push({ type: "text", text: userPrompt });
 
   try{
@@ -449,13 +546,25 @@ async function runAnalysis(){
     // dilakukan sekali per hasil analisa dan disimpan di cache map di memori).
     await primeCodeValidityCache(parsed);
 
+    let effectiveInput = input;
+    if(!dxDiisiManual && parsed.ekstraksi_dokumen){
+      const filled = applyEkstraksiOtomatis(parsed.ekstraksi_dokumen);
+      effectiveInput = readCaseInput();
+      if(autoFillBox){
+        autoFillBox.innerHTML = filled
+          ? '<div class="ok">Beberapa field (diagnosis/tindakan/identitas) terisi otomatis dari dokumen yang diunggah — mohon periksa &amp; koreksi sebelum menyimpan kasus ini.</div>'
+          : '<div class="err">AI tidak berhasil membaca diagnosis dengan yakin dari dokumen yang diunggah. Cek "catatan_umum" di hasil analisa di bawah, lalu isi Diagnosis Utama secara manual kalau perlu.</div>';
+      }
+      updateChecklist();
+    }
+
     lastResult = parsed;
-    lastInput = input;
-    renderResult(parsed, {tarifAktual, tarifRiil}, input);
+    lastInput = effectiveInput;
+    renderResult(parsed, {tarifAktual, tarifRiil}, effectiveInput);
     updateChecklist();
 
     if(parsed.diagnosis_utama && parsed.diagnosis_utama.deskripsi){
-      switchTarifJenis(input.jenis === 'Rawat Jalan' ? 'rajal' : 'ranap');
+      switchTarifJenis(effectiveInput.jenis === 'Rawat Jalan' ? 'rajal' : 'ranap');
       const kw = parsed.diagnosis_utama.deskripsi.split(' ').slice(0,2).join(' ');
       document.getElementById('f_tarif_search').value = kw;
       renderTarifSearchResults();
@@ -492,7 +601,15 @@ KONTEKS RS: RS Tipe C swasta, Regional 1 tarif INA-CBG (Jawa Tengah, termasuk wi
 
 ANDA JUGA MENERIMA DATA PENUNJANG: hasil Laboratorium, Radiologi, dan Penunjang Lain (EKG/USG/PA/endoskopi/dll) yang ditempel terpisah oleh koder, catatan SOAP terstruktur (Subjective/Objective/Assessment/Plan), dan mungkin satu atau lebih GAMBAR terlampir (foto resume medis tulisan tangan, hasil rontgen/USG discan, hasil lab discan, dll). Ini sering memuat bukti obyektif untuk diagnosis sekunder yang belum sempat dikode (misal kalium rendah → hipokalemia, Hb rendah → anemia, hasil rontgen thorax dengan infiltrat → mendukung pneumonia, kreatinin tinggi + oliguria → cedera ginjal akut, hasil PA → diagnosis definitif pasca-operasi).
 
-ATURAN KHUSUS GAMBAR: baca gambar yang dilampirkan seteliti mungkin. Jika tulisan tangan/hasil scan sulit dibaca atau ambigu, JANGAN menebak isinya — sebutkan di "rekomendasi_konfirmasi_dpjp" bahwa bagian tersebut perlu dikonfirmasi karena gambar kurang jelas. Jika sebuah diagnosis/temuan berasal jelas dari gambar (bukan dari teks lain yang sudah ada), tandai sumber "temuan_dokumen_foto" dan sebutkan di "catatan" bahwa temuan berasal dari gambar terlampir.
+ATURAN KHUSUS GAMBAR/DOKUMEN: baca gambar/PDF yang dilampirkan seteliti mungkin. Jika lebih dari satu gambar/dokumen dilampirkan, anggap semuanya adalah halaman-halaman berurutan dari SATU rekam medis pasien yang sama (bisa sampai puluhan halaman per pasien) — gabungkan informasi dari seluruh halaman menjadi satu kesimpulan, JANGAN memperlakukannya sebagai kasus-kasus terpisah. Jika tulisan tangan/hasil scan sulit dibaca atau ambigu, JANGAN menebak isinya — sebutkan di "rekomendasi_konfirmasi_dpjp" bahwa bagian tersebut perlu dikonfirmasi karena dokumen kurang jelas. Jika sebuah diagnosis/temuan berasal jelas dari gambar/dokumen (bukan dari teks lain yang sudah ada), tandai sumber "temuan_dokumen_foto" dan sebutkan di "catatan" bahwa temuan berasal dari dokumen terlampir (sebutkan nomor halaman/nama file kalau memungkinkan).
+
+MODE EKSTRAKSI OTOMATIS: kalau baris "Diagnosis Utama" pada DATA KASUS di bawah bertuliskan "(BELUM DIISI KODER...)", artinya koder BELUM sempat mengetik apa pun secara manual dan sepenuhnya mengandalkan Anda membaca dokumen/gambar terlampir untuk menentukan identitas dasar kasus ini. Dalam mode ini:
+- Baca seluruh dokumen/gambar terlampir untuk menemukan diagnosis utama, diagnosis sekunder yang sudah tertulis eksplisit di dokumen, tindakan/prosedur yang tertulis eksplisit, serta (jika tertulis jelas) usia, jenis kelamin, tanggal masuk, tanggal keluar, dan nama DPJP.
+- WAJIB isi field "ekstraksi_dokumen" pada output dengan teks mentah (bukan kode ICD, cukup teks apa adanya seperti yang akan diketik manual oleh koder ke form) hasil pembacaan Anda.
+- Kosongkan (null) field ekstraksi yang tidak bisa Anda baca dengan yakin — JANGAN PERNAH mengarang identitas atau diagnosis yang tidak benar-benar tertulis di dokumen.
+- Kalau dokumen sama sekali tidak terbaca, tidak relevan, atau tidak memuat diagnosis yang jelas, kembalikan semua field "ekstraksi_dokumen" sebagai null dan WAJIB jelaskan masalahnya di "catatan_umum" (misalnya "dokumen tidak terbaca/buram" atau "dokumen tidak memuat diagnosis").
+- Field-field lain (diagnosis_utama, severity, tarif, dst.) tetap diisi berdasarkan hasil ekstraksi ini seperti biasa, kecuali kalau ekstraksi gagal total — dalam hal itu isi seadanya berdasarkan apa yang berhasil terbaca dan jelaskan keterbatasannya di "catatan_umum".
+Kalau "Diagnosis Utama" pada DATA KASUS SUDAH diisi koder (bukan placeholder di atas), field "ekstraksi_dokumen" boleh dikembalikan sebagai objek dengan semua nilai null (tidak dipakai).
 
 TUGAS:
 1. Tentukan kode ICD-10 diagnosis utama.
@@ -518,11 +635,13 @@ TUGAS:
    - Prosedur/tindakan yang dicantumkan tapi tidak didukung diagnosis yang jelas mengindikasikannya.
    - Kombinasi diagnosis-prosedur yang secara klinis janggal atau butuh penjelasan tambahan.
    Jika tidak ada isu, kembalikan array kosong.
+10. "rekomendasi_penunjang": daftar USULAN pemeriksaan/terapi penunjang yang BELUM ada di data kasus tapi secara klinis wajar dipertimbangkan berdasarkan diagnosis/gejala/temuan yang SUDAH terdokumentasi (bukan skrining rutin generik tanpa dasar). Setiap item objek {"kategori":"Laboratorium|Radiologi|Farmasi|Tindakan Lain","usulan":"string (pemeriksaan/obat/tindakan spesifik)","alasan_klinis":"string (kaitkan dengan diagnosis/gejala/temuan yang sudah ada)","urgensi":"Segera|Rutin"}. Ini adalah DUKUNGAN KEPUTUSAN KLINIS berupa SARAN untuk dipertimbangkan DPJP/klinisi yang merawat — BUKAN instruksi, BUKAN resep, BUKAN pengganti penilaian klinis langsung terhadap pasien. Contoh: diagnosis pneumonia belum ada kultur sputum → usulkan kultur sputum (Laboratorium, Rutin); keluhan nyeri dada akut belum ada rekaman EKG → usulkan EKG (Radiologi/Penunjang, Segera); diagnosis hipertensi tanpa terapi tercatat → usulkan antihipertensi lini pertama sesuai kondisi (Farmasi, Rutin). Kalau tidak ada usulan yang cukup berdasar, kembalikan array kosong — JANGAN memaksakan usulan generik.
 
 ATURAN KETAT:
 - JANGAN PERNAH mengarang diagnosis/prosedur yang tidak berdasar dari teks input. Jika ragu, taruh di "rekomendasi_konfirmasi_dpjp".
 - Tujuannya KELENGKAPAN & AKURASI berbasis dokumentasi klinis nyata (clinical documentation improvement) — BUKAN upcoding tanpa dasar.
 - Estimasi tarif WAJIB berupa rentang (min-max) yang mencerminkan ketidakpastian, bukan angka tunggal presisi tinggi.
+- "rekomendasi_penunjang" HARUS selalu berbasis kaitan klinis yang jelas dengan data yang ada, bersifat SARAN untuk pertimbangan DPJP, dan tidak boleh diformulasikan sebagai perintah/kepastian diagnostik.
 - Tulis semua output dalam Bahasa Indonesia.
 
 FORMAT OUTPUT: HANYA JSON valid, tanpa teks lain, tanpa markdown fence:
@@ -537,7 +656,9 @@ FORMAT OUTPUT: HANYA JSON valid, tanpa teks lain, tanpa markdown fence:
   "temuan_potensi_kelengkapan": [{"temuan":"string","sumber":"Laboratorium|Radiologi|Penunjang Lain|Klinis|Gambar"}],
   "rekomendasi_konfirmasi_dpjp": ["string"],
   "red_flags_klinis": [{"flag":"string","tingkat":"Tinggi|Sedang|Rendah","saran":"string"}],
-  "catatan_umum": "string"
+  "rekomendasi_penunjang": [{"kategori":"Laboratorium|Radiologi|Farmasi|Tindakan Lain","usulan":"string","alasan_klinis":"string","urgensi":"Segera|Rutin"}],
+  "catatan_umum": "string",
+  "ekstraksi_dokumen": {"diagnosis_utama_teks":"string atau null","diagnosis_sekunder_teks":"string atau null (satu per baris dipisah \\n)","tindakan_teks":"string atau null (satu per baris dipisah \\n)","usia":"number atau null","jenis_kelamin":"Laki-laki, Perempuan, atau null","tgl_masuk":"YYYY-MM-DD atau null","tgl_keluar":"YYYY-MM-DD atau null","dpjp":"string atau null"}
 }`;
 }
 
@@ -552,7 +673,7 @@ Tanggal Keluar: ${input.tgl_keluar || '(tidak diisi)'}
 Readmisi <5 hari dengan diagnosis serupa: ${input.readmisi ? `YA (rawat sebelumnya pulang ${input.tgl_pulang_prev||'(tanggal tidak diisi)'}, diagnosis: ${input.dx_prev||'(tidak diisi)'})` : 'Tidak'}
 
 Diagnosis Utama:
-${input.dx_utama}
+${input.dx_utama || '(BELUM DIISI KODER — WAJIB DIBACA & DITENTUKAN DARI DOKUMEN/GAMBAR TERLAMPIR. Ikuti instruksi MODE EKSTRAKSI OTOMATIS di atas. Jika tidak ada dokumen relevan terlampir atau tidak terbaca jelas, kembalikan seluruh field ekstraksi_dokumen sebagai null dan jelaskan di catatan_umum.)'}
 
 Diagnosis Sekunder / Komorbid (input koder):
 ${input.dx_sek || '(tidak diisi)'}
@@ -642,6 +763,22 @@ function penunjangBadges(input){
   }).join('');
 }
 
+function renderRekomendasiPenunjang(list){
+  if(!list || !list.length) return `<div class="rf-empty">Tidak ada usulan penunjang tambahan dari AI untuk kasus ini.</div>`;
+  const kategoriTag = { 'Laboratorium':'src-lab', 'Radiologi':'src-rad', 'Farmasi':'src-farmasi', 'Tindakan Lain':'src-tindakan' };
+  const order = { Segera:0, Rutin:1 };
+  const sorted = [...list].sort((a,b)=>(order[a.urgensi]??2)-(order[b.urgensi]??2));
+  return sorted.map(r => `
+    <div class="rf-item">
+      <span class="rf-level ${esc(r.urgensi||'Rutin')}">${esc(r.urgensi||'Rutin')}</span>
+      <div class="rf-text">
+        <span class="rf-title"><span class="tag ${kategoriTag[r.kategori]||'temuan'}" style="margin-right:6px;">${esc(r.kategori||'Lainnya')}</span>${esc(r.usulan||'')}</span>
+        <span class="rf-saran">${esc(r.alasan_klinis||'')}</span>
+      </div>
+    </div>
+  `).join('');
+}
+
 function renderResult(data, manual, inputUsed){
   const before = tarifRange(data.estimasi_tarif_sebelum);
   const after = tarifRange(data.estimasi_tarif_sesudah);
@@ -700,7 +837,9 @@ function renderResult(data, manual, inputUsed){
     }).join('') || '<li style="color:#8FA0AF;">Tidak ada temuan tambahan.</li>'}</ul>
     <div class="section-title">Rekomendasi Konfirmasi ke DPJP <span style="text-transform:none;letter-spacing:0;">(query koder)</span></div>
     <ul class="findings query">${(data.rekomendasi_konfirmasi_dpjp||[]).map(t=>`<li><span class="dot"></span><span>${esc(t)}</span></li>`).join('') || '<li style="color:#8FA0AF;">Tidak ada item yang perlu dikonfirmasi.</li>'}</ul>
-    <div class="disclaimer"><strong>Catatan penting:</strong> Nilai pada kartu "Sebelum/Sesudah" adalah <u>perkiraan kasar AI</u>, bukan hasil grouper resmi. Untuk angka resmi, gunakan kartu "Cari Tarif Resmi INA-CBG". Hasil grouping final tetap harus diverifikasi lewat Aplikasi INA-CBG/e-Klaim RS. Kode yang diusulkan wajib diverifikasi koder tersertifikasi terhadap rekam medis asli sebelum diklaimkan ke BPJS.</div>
+    <div class="section-title">Rekomendasi Penunjang <span style="text-transform:none;letter-spacing:0;">(usulan AI untuk pertimbangan DPJP — bukan instruksi medis)</span></div>
+    ${renderRekomendasiPenunjang(data.rekomendasi_penunjang)}
+    <div class="disclaimer"><strong>Catatan penting:</strong> Nilai pada kartu "Sebelum/Sesudah" adalah <u>perkiraan kasar AI</u>, bukan hasil grouper resmi. Untuk angka resmi, gunakan kartu "Cari Tarif Resmi INA-CBG". Hasil grouping final tetap harus diverifikasi lewat Aplikasi INA-CBG/e-Klaim RS. Kode yang diusulkan wajib diverifikasi koder tersertifikasi terhadap rekam medis asli sebelum diklaimkan ke BPJS. Rekomendasi penunjang (lab/radiologi/farmasi/tindakan) bersifat <u>usulan AI</u> berbasis pola dokumentasi — BUKAN resep atau instruksi medis; keputusan akhir sepenuhnya berada pada DPJP/klinisi yang merawat pasien.</div>
     <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
       <button class="ghost" id="btnSaveCase" onclick="saveCase()">Simpan kasus ini</button>
       <button class="ghost" onclick="window.print()">Cetak / PDF</button>
@@ -756,6 +895,7 @@ async function saveCase(){
       severity_sebelum: r.severity_sebelum, severity_sesudah: r.severity_sesudah,
       estimasi_tarif_sebelum: r.estimasi_tarif_sebelum, estimasi_tarif_sesudah: r.estimasi_tarif_sesudah,
       temuan_potensi_kelengkapan: r.temuan_potensi_kelengkapan, rekomendasi_konfirmasi_dpjp: r.rekomendasi_konfirmasi_dpjp,
+      rekomendasi_penunjang: r.rekomendasi_penunjang,
       red_flags_klinis: r.red_flags_klinis, catatan_umum: r.catatan_umum, model_used: 'claude-sonnet-4-6', is_current: true,
     });
     if(aiErr) throw aiErr;
@@ -867,6 +1007,7 @@ async function reopenCase(id){
     severity_sebelum: ai.severity_sebelum, severity_sesudah: ai.severity_sesudah,
     estimasi_tarif_sebelum: ai.estimasi_tarif_sebelum, estimasi_tarif_sesudah: ai.estimasi_tarif_sesudah,
     temuan_potensi_kelengkapan: ai.temuan_potensi_kelengkapan, rekomendasi_konfirmasi_dpjp: ai.rekomendasi_konfirmasi_dpjp,
+    rekomendasi_penunjang: ai.rekomendasi_penunjang,
     red_flags_klinis: ai.red_flags_klinis, catatan_umum: ai.catatan_umum,
   };
   lastInput = readCaseInput();
