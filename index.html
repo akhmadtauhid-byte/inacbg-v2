@@ -358,10 +358,12 @@
             <div><label style="margin:0 0 4px;font-size:11px;">A — Assessment</label><textarea id="f_soap_a" style="min-height:50px"></textarea></div>
             <div><label style="margin:0 0 4px;font-size:11px;">P — Plan</label><textarea id="f_soap_p" style="min-height:50px"></textarea></div>
           </div>
-          <label style="margin-top:16px;">Unggah Gambar Pendukung <span class="hint">(opsional — maks 4 gambar, @ ≤5MB. Dikirim ke gateway AI untuk dianalisis, TIDAK disimpan ke database)</span></label>
-          <input type="file" id="f_images" accept="image/*" multiple onchange="handleImageUpload(event)" style="font-size:12px;">
+          <label style="margin-top:16px;">Unggah Dokumen Pendukung <span class="hint">(opsional — foto tiap halaman JPG/PNG atau PDF multi-halaman, tidak dibatasi ke beberapa lembar saja (mendukung berkas sampai puluhan halaman per pasien). Dikirim ke gateway AI untuk dianalisis, TIDAK disimpan ke database)</span></label>
+<p class="hint" style="margin:0 0 8px;">Kalau Diagnosis Utama di atas belum diisi, cukup unggah seluruh halaman dokumen di sini lalu klik tombol di bawah — AI akan membaca semua halaman dan mengisi otomatis field diagnosis/tindakan/identitas yang masih kosong. Foto dikompres otomatis di browser supaya tetap ringan dikirim. Selalu periksa hasil isian otomatis sebelum menyimpan.</p>
+<input type="file" id="f_images" accept="image/*,application/pdf" multiple onchange="handleImageUpload(event)" style="font-size:12px;">
           <div id="imgGallery" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;"></div>
           <button class="primary" id="btnAnalyze" onclick="runAnalysis()"><span id="btnLabel">Analisa Koding + Tarif</span></button>
+          <div id="autoFillNotice"></div>
           <div id="errBox"></div>
         </div>
 
