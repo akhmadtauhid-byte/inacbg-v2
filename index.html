@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sistem Terintegrasi INA-CBG — Koding & Tarif — RSU Allam Medica</title>
+<!-- build: v2 — Supabase + Gateway edition -->
+<!--
+  CATATAN VERSI 2 (baca sebelum deploy):
+  - Versi ini TIDAK LAGI memakai window.storage / panggilan langsung ke
+    api.anthropic.com (yang hanya jalan di dalam preview Claude.ai).
+  - Semua data (klaim, hasil AI, skrining) disimpan di Supabase (Postgres)
+    dan hanya bisa diakses oleh staf yang login (lihat RLS di 02_rls.sql).
+  - Panggilan AI diteruskan lewat Cloudflare Worker gateway milik RS,
+    BUKAN langsung ke Anthropic dari browser — lihat CONFIG di bagian
+    atas <script> untuk mengisi URL gateway.
+  - Isi CONFIG di bawah ini sebelum dipakai (SUPABASE_URL, SUPABASE_ANON_KEY,
+    GATEWAY_URL). Ini placeholder yang WAJIB diganti setiap kali Anda
+    menyalin file ini untuk instansi/proyek lain.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<style>
+  :root{
+    --ink:#0F2438; --steel:#1C4E80; --steel-2:#2E6DA4;
+    --paper:#E9EDF1; --paper-2:#F6F7F9; --card:#FFFFFF; --line:#D3DAE2;
+    --gold:#A97B26; --gold-bg:#FBF1DD;
+    --teal:#2F6E62; --teal-bg:#E3F0EC;
+    --red:#A23B3B; --red-bg:#F7E7E5;
+    --shadow: 0 1px 2px rgba(15,36,56,.06), 0 8px 24px rgba(15,36,56,.06);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{background:var(--paper);color:var(--ink);font-family:'IBM Plex Sans',sans-serif;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1260px;margin:0 auto;padding:26px 18px 80px;}
+
+  header.top{display:flex;align-items:flex-end;justify-content:space-between;border-bottom:2px solid var(--ink);padding-bottom:16px;margin-bottom:20px;gap:14px;flex-wrap:wrap;}
+  .brand-eyebrow{font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--steel-2);margin-bottom:5px;}
+  h1.brand{font-family:'Fraunces',serif;font-weight:600;font-size:25px;line-height:1.15;margin:0;color:var(--ink);}
+  .brand small{display:block;font-family:'IBM Plex Sans';font-weight:400;font-size:13px;color:#4C5E70;margin-top:5px;}
+  .stamp{font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;border:1.5px solid var(--steel);color:var(--steel);padding:7px 12px;border-radius:3px;transform:rotate(-2deg);white-space:nowrap;}
+
+  .tabs{display:flex;gap:4px;margin-bottom:18px;border-bottom:1px solid var(--line);flex-wrap:wrap;}
+  .tab-btn{
+    font-family:'IBM Plex Sans';font-weight:600;font-size:13px;color:#6B7C8C;
+    background:none;border:none;padding:10px 16px;cursor:pointer;border-bottom:2.5px solid transparent;
+  }
+  .tab-btn.active{color:var(--ink);border-bottom-color:var(--steel);}
+  .tab-panel{display:none;}
+  .tab-panel.active{display:block;}
+
+  .layout{display:grid;grid-template-columns:1.05fr 1.45fr;gap:20px;align-items:start;}
+  @media (max-width:960px){.layout{grid-template-columns:1fr;}}
+
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow);padding:20px;}
+  .card + .card{margin-top:16px;}
+  .card h2{font-family:'Fraunces',serif;font-weight:600;font-size:16px;margin:0 0 12px;color:var(--ink);display:flex;align-items:center;gap:8px;}
+  .idx{font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--steel-2);border:1px solid var(--steel-2);border-radius:3px;padding:1px 6px;}
+
+  label{display:block;font-size:12px;font-weight:600;color:#33475A;margin:13px 0 5px;}
+  label:first-of-type{margin-top:0;}
+  .hint{font-weight:400;color:#7A8B9C;font-size:11px;}
+  input[type=text],input[type=number],input[type=password],input[type=email],textarea,select{
+    width:100%;border:1px solid var(--line);border-radius:5px;padding:8px 10px;font-family:'IBM Plex Sans';font-size:13px;color:var(--ink);background:var(--paper-2);resize:vertical;
+  }
+  textarea{min-height:58px;line-height:1.5;}
+  input:focus,textarea:focus,select:focus{outline:2px solid var(--steel-2);outline-offset:1px;border-color:var(--steel-2);}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+
+  button.primary{margin-top:16px;width:100%;background:var(--ink);color:#fff;border:none;border-radius:6px;padding:12px 16px;font-family:'IBM Plex Sans';font-weight:600;font-size:13.5px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;}
+  button.primary:hover{background:var(--steel);}
+  button.primary:disabled{background:#9FADB9;cursor:not-allowed;}
+  button.ghost{background:transparent;border:1px solid var(--line);color:var(--steel);border-radius:5px;padding:8px 12px;font-size:12px;font-weight:600;cursor:pointer;font-family:'IBM Plex Sans';}
+  button.ghost:hover{background:var(--paper-2);}
+  .spinner{width:13px;height:13px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+
+  .empty{text-align:center;padding:56px 18px;color:#7A8B9C;}
+  .empty .glyph{font-family:'Fraunces',serif;font-size:38px;color:var(--line);margin-bottom:10px;}
+  .empty p{margin:4px 0;font-size:13px;}
+
+  .section-title{font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--steel-2);margin:20px 0 8px;padding-top:15px;border-top:1px dashed var(--line);}
+  .section-title:first-child{border-top:none;padding-top:0;margin-top:0;}
+
+  table.codes{width:100%;border-collapse:collapse;margin-top:6px;}
+  table.codes th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:#7A8B9C;font-weight:600;padding:6px 7px;border-bottom:1px solid var(--line);}
+  table.codes td{padding:8px 7px;border-bottom:1px solid #EEF1F4;font-size:12.5px;vertical-align:top;}
+  .code-chip{font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:12px;background:var(--paper-2);border:1px solid var(--line);border-radius:4px;padding:2px 6px;white-space:nowrap;color:var(--steel);}
+  .tag{font-family:'IBM Plex Mono',monospace;font-size:9.5px;font-weight:600;padding:2px 6px;border-radius:10px;text-transform:uppercase;}
+  .tag.mcc{background:var(--red-bg);color:var(--red);}
+  .tag.cc{background:var(--gold-bg);color:var(--gold);}
+  .tag.none{background:#EEF1F4;color:#8FA0AF;}
+  .tag.baseline{background:#E4E9EE;color:#4C5E70;}
+  .tag.temuan{background:var(--teal-bg);color:var(--teal);}
+  .tag.src-lab{background:#E1EAF5;color:#1C4E80;}
+  .tag.src-rad{background:#EFEAF7;color:#6B4FA0;}
+  .tag.src-penunjang{background:#F3ECD9;color:#8A6D1D;}
+  .tag.src-foto{background:#F5E9EF;color:#7A3B5C;}
+
+  .thumb{position:relative;width:64px;height:64px;border-radius:5px;overflow:hidden;border:1px solid var(--line);}
+  .thumb img{width:100%;height:100%;object-fit:cover;display:block;}
+  .thumb .rm{position:absolute;top:1px;right:1px;background:rgba(15,36,56,.75);color:#fff;border:none;border-radius:50%;width:18px;height:18px;font-size:12px;line-height:18px;text-align:center;cursor:pointer;padding:0;}
+
+  .chk-progress-bar{height:8px;background:var(--paper-2);border-radius:4px;overflow:hidden;border:1px solid var(--line);}
+  .chk-progress-fill{height:100%;background:var(--teal);}
+  .chk-progress-label{display:flex;justify-content:space-between;font-size:11px;color:#6B7C8C;margin-top:4px;font-family:'IBM Plex Mono',monospace;}
+  .chk-cat{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--steel-2);margin:14px 0 6px;}
+  .chk-cat:first-child{margin-top:4px;}
+  .chk-item{display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid #F1F3F5;font-size:12.5px;}
+  .chk-item input{margin-top:3px;width:auto;}
+  .chk-item.critical label{font-weight:600;}
+
+  .rf-item{display:flex;gap:10px;padding:11px 0;border-bottom:1px solid #F1F3F5;align-items:flex-start;}
+  .rf-item:last-child{border-bottom:none;}
+  .rf-level{font-family:'IBM Plex Mono',monospace;font-size:9.5px;font-weight:700;padding:3px 8px;border-radius:10px;text-transform:uppercase;white-space:nowrap;flex-shrink:0;margin-top:1px;}
+  .rf-level.Tinggi{background:var(--red);color:#fff;}
+  .rf-level.Sedang{background:var(--gold);color:#fff;}
+  .rf-level.Rendah{background:#8FA6B8;color:#fff;}
+  .rf-text{font-size:12.5px;line-height:1.5;}
+  .rf-text .rf-title{font-weight:600;color:var(--ink);display:block;margin-bottom:2px;}
+  .rf-text .rf-saran{color:#5C6E80;}
+  .rf-empty{padding:14px 0;color:#8FA0AF;font-size:12.5px;text-align:center;}
+
+  .ts-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid #F1F3F5;}
+  .ts-row:last-child{border-bottom:none;}
+  .ts-info{flex:1;min-width:0;}
+  .ts-desk{font-size:12px;color:var(--ink);line-height:1.4;}
+  .ts-nums{font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#7A8B9C;margin-top:2px;}
+  .ts-use{flex-shrink:0;background:var(--steel);color:#fff;border:none;border-radius:4px;padding:6px 10px;font-size:11px;font-weight:600;cursor:pointer;}
+  .ts-use:hover{background:var(--ink);}
+  .tarif-badge{background:var(--teal-bg);border:1px solid var(--teal);border-radius:6px;padding:10px 12px;font-size:12px;color:var(--ink);}
+  .tarif-badge .code-chip{margin-right:6px;}
+
+  .valid-line{margin-top:3px;}
+  .tag.valid-code{background:var(--teal-bg);color:var(--teal);}
+  .tag.invalid-code{background:var(--gold-bg);color:var(--gold);}
+
+  .status-chip{font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:700;padding:3px 9px;border-radius:10px;text-transform:uppercase;white-space:nowrap;}
+  .status-chip.Draft{background:#E4E9EE;color:#4C5E70;}
+  .status-chip.SiapVerifikasiInternal{background:var(--steel);color:#fff;}
+  .status-chip.DiajukankeBPJS{background:var(--steel-2);color:#fff;}
+  .status-chip.Disetujui{background:var(--teal);color:#fff;}
+  .status-chip.Dispute{background:var(--gold);color:#fff;}
+  .status-chip.Ditolak{background:var(--red);color:#fff;}
+  .arsip-count{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:#4C5E70;background:var(--paper-2);border:1px solid var(--line);border-radius:20px;padding:4px 11px;margin:0 6px 6px 0;}
+  table.arsip{width:100%;border-collapse:collapse;font-size:12px;}
+  table.arsip th{text-align:left;background:var(--ink);color:#fff;font-size:10px;text-transform:uppercase;padding:8px;letter-spacing:.04em;}
+  table.arsip td{padding:8px;border-bottom:1px solid #EEF1F4;vertical-align:middle;}
+  table.arsip tr:hover td{background:var(--paper-2);}
+  table.arsip .arsip-open{background:var(--steel);color:#fff;border:none;border-radius:4px;padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer;}
+  table.arsip .arsip-open:hover{background:var(--ink);}
+  table.arsip select.status-select{font-size:11px;padding:4px 6px;border-radius:4px;border:1px solid var(--line);}
+
+  .risk-pill{font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:700;padding:3px 9px;border-radius:10px;text-transform:uppercase;white-space:nowrap;}
+  .risk-pill.Tinggi{background:var(--red);color:#fff;}
+  .risk-pill.Sedang{background:var(--gold);color:#fff;}
+  .risk-pill.Rendah{background:var(--teal);color:#fff;}
+  table.skrining{width:100%;border-collapse:collapse;font-size:12px;}
+  table.skrining th{text-align:left;background:var(--ink);color:#fff;font-size:10px;text-transform:uppercase;padding:8px;letter-spacing:.04em;}
+  table.skrining td{padding:8px;border-bottom:1px solid #EEF1F4;vertical-align:middle;cursor:pointer;}
+  table.skrining tr:hover td{background:var(--paper-2);}
+  .skrining-modal-backdrop{position:fixed;inset:0;background:rgba(15,36,56,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;}
+  .skrining-modal{background:#fff;border-radius:8px;max-width:640px;width:100%;max-height:85vh;overflow-y:auto;padding:20px;box-shadow:0 8px 30px rgba(0,0,0,.3);}
+  .flag-row{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid #F1F3F5;align-items:flex-start;}
+  .flag-row:last-child{border-bottom:none;}
+  .flag-weight{font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:700;color:#fff;background:var(--steel);border-radius:10px;padding:2px 8px;flex-shrink:0;margin-top:1px;}
+  .case-mix-note{margin-top:12px;padding:10px 12px;background:var(--paper-2);border-left:3px solid var(--steel-2);font-size:12px;line-height:1.5;color:#33475A;border-radius:0 4px 4px 0;}
+
+  .penunjang-tabs{display:flex;gap:4px;margin-bottom:4px;}
+  .pt-btn{font-family:'IBM Plex Sans';font-weight:600;font-size:11.5px;color:#6B7C8C;background:var(--paper-2);border:1px solid var(--line);border-bottom:none;padding:7px 12px;cursor:pointer;border-radius:5px 5px 0 0;}
+  .pt-btn.active{color:var(--ink);background:var(--card);}
+  .pt-panel{display:none;border:1px solid var(--line);border-radius:0 5px 5px 5px;padding:10px;background:var(--card);}
+  .pt-panel.active{display:block;}
+  .pt-panel textarea{min-height:70px;}
+
+  ul.findings{margin:6px 0 0;padding-left:0;list-style:none;}
+  ul.findings li{display:flex;gap:9px;padding:7px 0;border-bottom:1px solid #F1F3F5;font-size:12.5px;line-height:1.5;}
+  ul.findings li:last-child{border-bottom:none;}
+  ul.findings li .dot{flex:0 0 6px;height:6px;border-radius:50%;background:var(--teal);margin-top:6px;}
+  ul.findings.query li .dot{background:var(--gold);}
+
+  .disclaimer{margin-top:18px;padding:11px 13px;background:var(--paper-2);border-left:3px solid var(--steel-2);font-size:11px;color:#4C5E70;border-radius:0 4px 4px 0;line-height:1.5;}
+
+  .impact-grid{display:grid;grid-template-columns:1fr auto 1fr;gap:10px;align-items:stretch;margin-top:8px;}
+  .impact-box{border:1px solid var(--line);border-radius:6px;padding:14px;background:var(--paper-2);}
+  .impact-box.after{background:var(--teal-bg);border-color:var(--teal);}
+  .impact-arrow{display:flex;align-items:center;justify-content:center;color:var(--steel-2);font-size:20px;}
+  .impact-label{font-family:'IBM Plex Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#7A8B9C;margin-bottom:6px;}
+  .impact-box.after .impact-label{color:var(--teal);}
+  .impact-sev{font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:13px;color:var(--ink);margin-bottom:4px;}
+  .impact-tarif{font-family:'Fraunces',serif;font-weight:600;font-size:17px;color:var(--ink);}
+  .impact-tarif small{font-family:'IBM Plex Sans';font-weight:400;font-size:10.5px;color:#7A8B9C;}
+  .uplift-banner{margin-top:12px;padding:12px 14px;background:var(--gold-bg);border-radius:6px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;}
+  .uplift-banner .amt{font-family:'Fraunces',serif;font-weight:700;font-size:19px;color:var(--gold);}
+  .uplift-banner .lbl{font-size:12px;color:#6B5220;}
+
+  .compare-real{margin-top:14px;padding:14px;border-radius:6px;border:1px solid var(--line);}
+  .compare-real.surplus{background:var(--teal-bg);border-color:var(--teal);}
+  .compare-real.defisit{background:var(--red-bg);border-color:var(--red);}
+  .compare-real.impas{background:var(--gold-bg);border-color:var(--gold);}
+  .cr-row{display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0;}
+  .cr-row.total{font-weight:700;font-size:13.5px;border-top:1px solid rgba(0,0,0,.08);margin-top:6px;padding-top:8px;}
+  .status-pill{font-family:'IBM Plex Mono',monospace;font-size:10.5px;font-weight:700;padding:3px 9px;border-radius:10px;text-transform:uppercase;}
+  .status-pill.surplus{background:var(--teal);color:#fff;}
+  .status-pill.defisit{background:var(--red);color:#fff;}
+  .status-pill.impas{background:var(--gold);color:#fff;}
+
+  .hist-item{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px 4px;border-bottom:1px solid #F1F3F5;cursor:pointer;}
+  .hist-item:hover{background:var(--paper-2);}
+  .hist-item:last-child{border-bottom:none;}
+  .hist-main{font-size:12px;font-weight:600;color:var(--ink);}
+  .hist-sub{font-size:10.5px;color:#8FA0AF;font-family:'IBM Plex Mono',monospace;}
+
+  .err{margin-top:12px;padding:10px 12px;background:var(--red-bg);color:var(--red);border-radius:5px;font-size:12px;}
+  .ok{margin-top:12px;padding:10px 12px;background:var(--teal-bg);color:var(--teal);border-radius:5px;font-size:12px;}
+
+  .kpi-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px;}
+  @media (max-width:760px){.kpi-grid{grid-template-columns:1fr 1fr;}}
+  .kpi{border:1px solid var(--line);border-radius:8px;padding:14px;background:var(--card);}
+  .kpi .kl{font-size:11px;color:#7A8B9C;font-weight:600;margin-bottom:6px;}
+  .kpi .kv{font-family:'Fraunces',serif;font-weight:700;font-size:20px;color:var(--ink);}
+  .kpi.gold .kv{color:var(--gold);}
+  .kpi.teal .kv{color:var(--teal);}
+  .kpi.red .kv{color:var(--red);}
+  table.dash{width:100%;border-collapse:collapse;font-size:12px;}
+  table.dash th{text-align:left;background:var(--ink);color:#fff;font-size:10px;text-transform:uppercase;padding:8px 8px;letter-spacing:.04em;}
+  table.dash td{padding:8px;border-bottom:1px solid #EEF1F4;}
+  table.dash tr:hover td{background:var(--paper-2);}
+
+  /* ===== v2: login & topbar tambahan ===== */
+  .login-wrap{max-width:380px;margin:80px auto;padding:0 18px;}
+  .role-badge{font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:700;padding:3px 9px;border-radius:10px;text-transform:uppercase;background:var(--steel);color:#fff;}
+  .topbar-user{display:flex;align-items:center;gap:10px;font-size:12px;color:#4C5E70;}
+  .sync-dot{width:7px;height:7px;border-radius:50%;background:#8FA0AF;display:inline-block;margin-right:5px;}
+  .sync-dot.ok{background:var(--teal);}
+  .sync-dot.err{background:var(--red);}
+</style>
+</head>
+<body>
+
+<!-- ===================== LAYAR LOGIN ===================== -->
+<div class="login-wrap" id="loginScreen">
+  <div class="card">
+    <h2><span class="idx">⚿</span> Masuk — Sistem INA-CBG RSU Allam Medica</h2>
+    <label>Email</label>
+    <input type="email" id="loginEmail" placeholder="nama@rsuallammedica.id" autocomplete="username">
+    <label>Kata Sandi</label>
+    <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password">
+    <button class="primary" id="btnLogin" onclick="doLogin()"><span id="loginBtnLabel">Masuk</span></button>
+    <div id="loginErrBox"></div>
+    <p class="hint" style="margin-top:14px;">Akun dibuat oleh admin lewat Supabase Dashboard. Hubungi admin sistem RS kalau belum punya akun atau lupa kata sandi.</p>
+  </div>
+</div>
+
+<!-- ===================== APLIKASI UTAMA (tampil setelah login) ===================== -->
+<div class="wrap" id="appScreen" style="display:none;">
+
+  <header class="top">
+    <div>
+      <div class="brand-eyebrow">Unit Rekam Medis &amp; Koding — Bumiayu, Brebes</div>
+      <h1 class="brand">Sistem Terintegrasi INA-CBG
+        <small>Analisa kelengkapan koding ICD-10/ICD-9-CM sekaligus dampak tarifnya terhadap klaim &amp; biaya riil RS</small>
+      </h1>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
+      <div class="stamp">AI Coding + Tariff Review · v2</div>
+      <div class="topbar-user">
+        <span><span class="sync-dot" id="syncDot"></span><span id="syncLabel">tersambung</span></span>
+        <span id="userEmailLabel"></span>
+        <span class="role-badge" id="userRoleBadge">—</span>
+        <button class="ghost" onclick="doLogout()">Keluar</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="disclaimer" style="margin-bottom:18px;">
+    Data pasien pada sistem ini hanya dapat diakses oleh staf yang login sesuai peran (koder/verifikator/admin), tersimpan di database RS (Supabase), dan setiap perubahan tercatat di log audit — sesuai kewajiban kerahasiaan rekam medis elektronik pada Permenkes No. 24 Tahun 2022.
+  </div>
+
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="analisa" onclick="switchTab('analisa')">Analisa Kasus</button>
+    <button class="tab-btn" data-tab="arsip" onclick="switchTab('arsip')">Arsip Pasien</button>
+    <button class="tab-btn" data-tab="skrining" onclick="switchTab('skrining')">Skrining Upcoding</button>
+    <button class="tab-btn" data-tab="dashboard" onclick="switchTab('dashboard')">Ringkasan / Dashboard</button>
+  </div>
+
+  <!-- ===================== TAB: ANALISA ===================== -->
+  <div class="tab-panel active" id="tab-analisa">
+    <div class="layout">
+      <div>
+        <div class="card">
+          <h2><span class="idx">01</span> Data Kasus</h2>
+          <div class="row2">
+            <div><label>No. RM <span class="hint">(opsional)</span></label><input type="text" id="f_rm" placeholder="00-12-34"></div>
+            <div><label>Nama Pasien <span class="hint">(opsional)</span></label><input type="text" id="f_nama" placeholder="Contoh: Bpk. Suryanto"></div>
+          </div>
+          <div class="row2">
+            <div><label>Jenis Pelayanan</label>
+              <select id="f_jenis" onchange="updateChecklist();toggleKelasBpjs();"><option value="Rawat Inap">Rawat Inap</option><option value="Rawat Jalan">Rawat Jalan</option></select>
+            </div>
+            <div><label>DPJP <span class="hint">(opsional)</span></label><input type="text" id="f_dpjp" placeholder="dr. Nama, Sp.XX"></div>
+          </div>
+          <div class="row2">
+            <div><label>Status Klaim</label>
+              <select id="f_status_klaim">
+                <option value="Draft">Draft</option>
+                <option value="Siap Verifikasi Internal">Siap Verifikasi Internal</option>
+                <option value="Diajukan ke BPJS">Diajukan ke BPJS</option>
+                <option value="Disetujui">Disetujui</option>
+                <option value="Dispute">Dispute</option>
+                <option value="Ditolak">Ditolak</option>
+              </select>
+            </div>
+            <div></div>
+          </div>
+          <div class="row2" id="kelasBpjsWrap">
+            <div><label>Kelas Rawat BPJS Pasien</label>
+              <select id="f_kelas_bpjs"><option value="3">Kelas 3</option><option value="2">Kelas 2</option><option value="1">Kelas 1</option></select>
+            </div>
+            <div></div>
+          </div>
+          <div class="row2">
+            <div><label>Usia Pasien <span class="hint">(tahun)</span></label><input type="number" id="f_usia" placeholder="Contoh: 45"></div>
+            <div><label>Jenis Kelamin</label><select id="f_jk"><option value="">— pilih —</option><option value="Laki-laki">Laki-laki</option><option value="Perempuan">Perempuan</option></select></div>
+          </div>
+          <div class="row2">
+            <div><label>Tanggal Masuk</label><input type="text" id="f_tgl_masuk" placeholder="YYYY-MM-DD"></div>
+            <div><label>Tanggal Keluar <span class="hint">(rencana/aktual)</span></label><input type="text" id="f_tgl_keluar" placeholder="YYYY-MM-DD"></div>
+          </div>
+          <label style="display:flex;align-items:center;gap:7px;margin-top:14px;">
+            <input type="checkbox" id="f_readmisi" style="width:auto;" onchange="toggleReadmisiFields();updateChecklist();">
+            <span style="font-weight:600;">Readmisi &lt;5 hari dari rawat sebelumnya dengan diagnosis serupa?</span>
+          </label>
+          <div id="readmisiFields" style="display:none;margin-top:8px;">
+            <div class="row2">
+              <div><label style="margin-top:0;">Tanggal Pulang Rawat Sebelumnya</label><input type="text" id="f_tgl_pulang_prev" placeholder="YYYY-MM-DD"></div>
+              <div><label style="margin-top:0;">Diagnosis Rawat Sebelumnya</label><input type="text" id="f_dx_prev" placeholder="Contoh: Community Acquired Pneumonia"></div>
+            </div>
+          </div>
+          <label style="margin-top:16px;">Diagnosis Utama</label>
+          <textarea id="f_dx_utama" placeholder="Contoh: Community Acquired Pneumonia"></textarea>
+          <label>Diagnosis Sekunder / Komorbid <span class="hint">— yang SUDAH direncanakan dikode koder, satu per baris</span></label>
+          <textarea id="f_dx_sek" placeholder="Contoh:&#10;Diabetes Melitus tipe 2 tidak terkontrol"></textarea>
+          <label>Tindakan / Prosedur <span class="hint">— satu per baris</span></label>
+          <textarea id="f_tindakan" placeholder="Contoh:&#10;Pemasangan ventilator mekanik &gt; 96 jam" onchange="updateChecklist()"></textarea>
+          <label>Ringkasan Klinis Tambahan <span class="hint">— resume medis (teks bebas, opsional)</span></label>
+          <textarea id="f_klinis" style="min-height:60px" placeholder="Tempel cuplikan resume medis di sini..."></textarea>
+          <label style="margin-top:16px;">Catatan SOAP Terstruktur <span class="hint">(opsional)</span></label>
+          <div class="row2" style="margin-bottom:8px;">
+            <div><label style="margin:0 0 4px;font-size:11px;">S — Subjective</label><textarea id="f_soap_s" style="min-height:50px"></textarea></div>
+            <div><label style="margin:0 0 4px;font-size:11px;">O — Objective</label><textarea id="f_soap_o" style="min-height:50px"></textarea></div>
+          </div>
+          <div class="row2">
+            <div><label style="margin:0 0 4px;font-size:11px;">A — Assessment</label><textarea id="f_soap_a" style="min-height:50px"></textarea></div>
+            <div><label style="margin:0 0 4px;font-size:11px;">P — Plan</label><textarea id="f_soap_p" style="min-height:50px"></textarea></div>
+          </div>
+          <label style="margin-top:16px;">Unggah Gambar Pendukung <span class="hint">(opsional — maks 4 gambar, @ ≤5MB. Dikirim ke gateway AI untuk dianalisis, TIDAK disimpan ke database)</span></label>
+          <input type="file" id="f_images" accept="image/*" multiple onchange="handleImageUpload(event)" style="font-size:12px;">
+          <div id="imgGallery" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;"></div>
+          <button class="primary" id="btnAnalyze" onclick="runAnalysis()"><span id="btnLabel">Analisa Koding + Tarif</span></button>
+          <div id="errBox"></div>
+        </div>
+
+        <div class="card">
+          <h2><span class="idx">02</span> Verifikasi &amp; Cari Kode ICD-10 / ICD-9-CM</h2>
+          <p class="hint" style="margin:0 0 10px;">Dicari langsung dari database RS (10.663 kode ICD-10 WHO 2010 &amp; 3.953 kode ICD-9-CM) — bukan lagi ditanam di file ini, jadi bisa diperbarui admin tanpa update aplikasi.</p>
+          <div class="penunjang-tabs">
+            <button type="button" class="pt-btn active" data-icd="dx" onclick="switchIcdJenis('dx')">ICD-10 (Diagnosis)</button>
+            <button type="button" class="pt-btn" data-icd="px" onclick="switchIcdJenis('px')">ICD-9-CM (Prosedur)</button>
+          </div>
+          <div style="border:1px solid var(--line);border-top:none;border-radius:0 5px 5px 5px;padding:10px;background:var(--card);">
+            <input type="text" id="f_icd_search" placeholder="Ketik kode atau kata kunci (min. 2 huruf)..." oninput="renderIcdSearchResults()">
+            <div id="icdSearchResults" style="margin-top:10px;max-height:280px;overflow-y:auto;"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2><span class="idx">03</span> Data Penunjang <span class="hint" style="font-weight:400;">(opsional)</span></h2>
+          <div class="penunjang-tabs">
+            <button type="button" class="pt-btn active" data-pt="lab" onclick="switchPT('lab')">Laboratorium</button>
+            <button type="button" class="pt-btn" data-pt="rad" onclick="switchPT('rad')">Radiologi</button>
+            <button type="button" class="pt-btn" data-pt="lain" onclick="switchPT('lain')">Penunjang Lain</button>
+          </div>
+          <div class="pt-panel active" id="pt-lab"><textarea id="f_lab" placeholder="Contoh:&#10;Hb 8.2 g/dL (N: 12-16)&#10;Kalium 2.9 mEq/L (N: 3.5-5.0)"></textarea></div>
+          <div class="pt-panel" id="pt-rad"><textarea id="f_radiologi" placeholder="Contoh:&#10;Rontgen Thorax: infiltrat perihilar bilateral"></textarea></div>
+          <div class="pt-panel" id="pt-lain"><textarea id="f_penunjang_lain" placeholder="Contoh:&#10;EKG: sinus takikardia"></textarea></div>
+        </div>
+
+        <div class="card">
+          <h2><span class="idx">04</span> Checklist Kelengkapan Berkas Klaim</h2>
+          <div id="checklistProgress" style="margin-bottom:10px;"></div>
+          <div id="checklistBody"></div>
+        </div>
+
+        <div class="card">
+          <h2><span class="idx">05</span> Cari Tarif Resmi INA-CBG <span class="hint" style="font-weight:400;">(Kelas RS C Swasta · Regional 1)</span></h2>
+          <p class="hint" style="margin:0 0 10px;">786 kode rawat inap + 289 kode rawat jalan dari Lampiran III Permenkes No. 3 Tahun 2023. Kode yang punya riwayat klaim RSU Allam Medica menampilkan baris 📊 benchmark tarif riil RS (rata-rata biaya riil &amp; LOS, dari data agregat internal — hanya tampil untuk staf yang login).</p>
+          <div class="penunjang-tabs">
+            <button type="button" class="pt-btn active" data-tj="ranap" onclick="switchTarifJenis('ranap')">Rawat Inap</button>
+            <button type="button" class="pt-btn" data-tj="rajal" onclick="switchTarifJenis('rajal')">Rawat Jalan</button>
+          </div>
+          <div style="border:1px solid var(--line);border-top:none;border-radius:0 5px 5px 5px;padding:10px;background:var(--card);">
+            <input type="text" id="f_tarif_search" placeholder="Ketik kode CBG atau kata kunci diagnosis (min. 2 huruf)..." oninput="renderTarifSearchResults()">
+            <div id="tarifSearchResults" style="margin-top:10px;max-height:280px;overflow-y:auto;"></div>
+          </div>
+          <div id="tarifTerpilihBadge" style="margin-top:10px;"></div>
+        </div>
+
+        <div class="card">
+          <h2><span class="idx">06</span> Data Tarif Pembanding <span class="hint" style="font-weight:400;">(opsional)</span></h2>
+          <label>Tarif INA-CBG Aktual dari e-Klaim</label>
+          <input type="number" id="f_tarif_aktual" placeholder="Contoh: 5200000">
+          <label>Tarif Riil / Unit Cost RS untuk kasus ini (Rp)</label>
+          <input type="number" id="f_tarif_riil" placeholder="Contoh: 5500000">
+        </div>
+      </div>
+
+      <div class="card" id="resultCard">
+        <h2><span class="idx">07</span> Hasil Telaah Koding &amp; Dampak Tarif</h2>
+        <div id="resultBody">
+          <div class="empty">
+            <div class="glyph">§</div>
+            <p>Isi data kasus di sebelah kiri, lalu klik <strong>Analisa Koding + Tarif</strong>.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== TAB: ARSIP PASIEN ===================== -->
+  <div class="tab-panel" id="tab-arsip">
+    <div class="card">
+      <h2><span class="idx">⌂</span> Arsip Pasien yang Sudah Dikoding</h2>
+      <p class="hint" style="margin:0 0 10px;" id="arsipScopeHint"></p>
+      <div class="row2" style="margin-bottom:10px;">
+        <div><label style="margin-top:0;">Cari <span class="hint">(No. RM / nama / diagnosis)</span></label><input type="text" id="f_arsip_search" placeholder="Ketik untuk mencari..." oninput="renderArsip()"></div>
+        <div><label style="margin-top:0;">Filter Status Klaim</label>
+          <select id="f_arsip_status" onchange="renderArsip()">
+            <option value="">Semua Status</option>
+            <option value="Draft">Draft</option>
+            <option value="Siap Verifikasi Internal">Siap Verifikasi Internal</option>
+            <option value="Diajukan ke BPJS">Diajukan ke BPJS</option>
+            <option value="Disetujui">Disetujui</option>
+            <option value="Dispute">Dispute</option>
+            <option value="Ditolak">Ditolak</option>
+          </select>
+        </div>
+      </div>
+      <div id="arsipStatusCounts" style="margin-bottom:14px;"></div>
+      <div id="arsipBody"><div class="empty"><div class="glyph">⌂</div><p>Memuat arsip...</p></div></div>
+      <div style="margin-top:14px;"><button class="ghost" onclick="exportArsipCsv()">Ekspor ke CSV</button></div>
+    </div>
+  </div>
+
+  <!-- ===================== TAB: SKRINING UPCODING ===================== -->
+  <div class="tab-panel" id="tab-skrining">
+    <div class="card">
+      <h2><span class="idx">◆</span> Skrining Deteksi Upcoding — Semua Klaim Tersimpan</h2>
+      <p class="hint" style="margin:0 0 10px;">Dihitung server-side (fungsi <code>recompute_screening_flags()</code>) tiap kali ada kasus baru/diperbarui. Outlier tarif/LOS baru dinilai kalau minimal 8 klaim lain dengan kode CBG sama; pola per-DPJP sudah disesuaikan campuran severity kasusnya (case-mix) — lihat catatan di detail tiap klaim. Ini alat bantu prioritas telaah internal, bukan tuduhan atau keputusan final.</p>
+      <div id="skriningKpis" class="kpi-grid"></div>
+      <div class="row2" style="margin-bottom:10px;">
+        <div><label style="margin-top:0;">Cari <span class="hint">(No. RM / nama / DPJP / diagnosis)</span></label><input type="text" id="f_skrining_search" placeholder="Ketik untuk mencari..." oninput="renderSkrining()"></div>
+        <div><label style="margin-top:0;">Filter Tingkat Risiko</label>
+          <select id="f_skrining_risk" onchange="renderSkrining()">
+            <option value="">Semua Tingkat</option><option value="Tinggi">Tinggi</option><option value="Sedang">Sedang</option><option value="Rendah">Rendah</option>
+          </select>
+        </div>
+      </div>
+      <div id="skriningBody"></div>
+      <div style="margin-top:14px;"><button class="ghost" onclick="exportSkriningCsv()">Ekspor Klaim Berisiko (CSV)</button></div>
+    </div>
+    <div id="skriningDetailPanel"></div>
+  </div>
+
+  <!-- ===================== TAB: DASHBOARD ===================== -->
+  <div class="tab-panel" id="tab-dashboard">
+    <div class="card">
+      <h2><span class="idx">Σ</span> Ringkasan Seluruh Kasus Tersimpan</h2>
+      <div id="dashBody"><div class="empty"><div class="glyph">Σ</div><p>Memuat ringkasan...</p></div></div>
+    </div>
+  </div>
+
+</div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
