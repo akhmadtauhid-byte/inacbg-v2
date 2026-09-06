@@ -13,7 +13,7 @@
 //  - Ada login (Supabase Auth) dan RLS per peran (admin/verifikator/koder).
 // =====================================================================
 
-const supabase = window.supabase.createClient(
+const sb = window.supabase.createClient(
   window.APP_CONFIG.SUPABASE_URL,
   window.APP_CONFIG.SUPABASE_ANON_KEY
 );
@@ -25,13 +25,13 @@ let currentProfile = null; // {id, full_name, role}
 // AUTH
 // ---------------------------------------------------------------------
 async function initAuth(){
-  const { data: { session } } = await supabase.auth.getSession();
+  const { data: { session } } = await sb.auth.getSession();
   if(session){
     await onLoggedIn(session);
   } else {
     showLogin();
   }
-  supabase.auth.onAuthStateChange((event, session) => {
+  sb.auth.onAuthStateChange((event, session) => {
     if(event === 'SIGNED_OUT'){ showLogin(); }
   });
 }
@@ -43,11 +43,11 @@ function showLogin(){
 
 async function onLoggedIn(session){
   currentUser = session.user;
-  const { data: profile, error } = await supabase.from('profiles').select('*').eq('id', currentUser.id).single();
+  const { data: profile, error } = await sb.from('profiles').select('*').eq('id', currentUser.id).single();
   if(error || !profile){
     document.getElementById('loginErrBox').innerHTML =
       `<div class="err">Login berhasil, tapi akun Anda belum punya profil/peran di tabel <code>profiles</code>. Minta admin menambahkannya (lihat PANDUAN_DEPLOYMENT.md bagian "Kelola Pengguna").</div>`;
-    await supabase.auth.signOut();
+    await sb.auth.signOut();
     return;
   }
   currentProfile = profile;
@@ -76,7 +76,7 @@ async function doLogin(){
   if(!email || !password){ errBox.innerHTML = '<div class="err">Isi email dan kata sandi.</div>'; return; }
   btn.disabled = true; label.innerHTML = '<span class="spinner"></span> Masuk...';
   try{
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    const { data, error } = await sb.auth.signInWithPassword({ email, password });
     if(error) throw error;
     await onLoggedIn(data.session);
   }catch(err){
@@ -87,7 +87,7 @@ async function doLogin(){
 }
 
 async function doLogout(){
-  await supabase.auth.signOut();
+  await sb.auth.signOut();
   currentUser = null; currentProfile = null;
   showLogin();
 }
@@ -148,7 +148,7 @@ function renderIcdSearchResults(){
   el.innerHTML = '<p class="hint" style="text-align:center;">Mencari...</p>';
   icdSearchTimer = setTimeout(async () => {
     const table = icdJenisAktif === 'dx' ? 'icd10_codes' : 'icd9cm_codes';
-    const { data, error } = await supabase.from(table).select('kode,deskripsi')
+    const { data, error } = await sb.from(table).select('kode,deskripsi')
       .or(`kode.ilike.%${q}%,deskripsi.ilike.%${q}%`)
       .order('kode').limit(30);
     if(error){ el.innerHTML = `<p class="err">Gagal mencari: ${esc(error.message)}</p>`; return; }
@@ -171,7 +171,7 @@ function renderTarifSearchResults(){
   el.innerHTML = '<p class="hint" style="text-align:center;">Mencari...</p>';
   tarifSearchTimer = setTimeout(async () => {
     const table = tarifJenisAktif === 'ranap' ? 'tarif_ranap' : 'tarif_rajal';
-    const { data, error } = await supabase.from(table).select('*')
+    const { data, error } = await sb.from(table).select('*')
       .or(`kode.ilike.%${q}%,deskripsi.ilike.%${q}%`)
       .order('kode').limit(30);
     if(error){ el.innerHTML = `<p class="err">Gagal mencari: ${esc(error.message)}</p>`; return; }
@@ -179,7 +179,7 @@ function renderTarifSearchResults(){
 
     const kodeList = data.map(r=>r.kode);
     const jenisBenchmark = tarifJenisAktif === 'ranap' ? 'RANAP' : 'RAJAL';
-    const { data: bench } = await supabase.from('benchmark_riil_rs').select('*')
+    const { data: bench } = await sb.from('benchmark_riil_rs').select('*')
       .in('kode', kodeList).eq('jenis', jenisBenchmark);
     const benchMap = new Map((bench||[]).map(b => [b.kode, b]));
 
@@ -476,11 +476,11 @@ async function primeCodeValidityCache(parsed){
     .filter(Boolean).map(normCode);
   const pxCodes = (parsed.prosedur||[]).map(p=>p.kode).filter(Boolean).map(normCode);
   if(dxCodes.length){
-    const { data } = await supabase.from('icd10_codes').select('kode,deskripsi').in('kode', [...new Set(dxCodes)]);
+    const { data } = await sb.from('icd10_codes').select('kode,deskripsi').in('kode', [...new Set(dxCodes)]);
     validIcd10Map = new Map((data||[]).map(r=>[r.kode, r.deskripsi]));
   }
   if(pxCodes.length){
-    const { data } = await supabase.from('icd9cm_codes').select('kode,deskripsi').in('kode', [...new Set(pxCodes)]);
+    const { data } = await sb.from('icd9cm_codes').select('kode,deskripsi').in('kode', [...new Set(pxCodes)]);
     validIcd9Map = new Map((data||[]).map(r=>[r.kode, r.deskripsi]));
   }
 }
@@ -740,17 +740,17 @@ async function saveCase(){
   try{
     let claimId = editingClaimId;
     if(claimId){
-      const { error } = await supabase.from('claims').update(claimRow).eq('id', claimId);
+      const { error } = await sb.from('claims').update(claimRow).eq('id', claimId);
       if(error) throw error;
-      await supabase.from('ai_results').update({ is_current: false }).eq('claim_id', claimId).eq('is_current', true);
+      await sb.from('ai_results').update({ is_current: false }).eq('claim_id', claimId).eq('is_current', true);
     } else {
-      const { data, error } = await supabase.from('claims').insert(claimRow).select('id').single();
+      const { data, error } = await sb.from('claims').insert(claimRow).select('id').single();
       if(error) throw error;
       claimId = data.id;
     }
 
     const r = lastResult;
-    const { error: aiErr } = await supabase.from('ai_results').insert({
+    const { error: aiErr } = await sb.from('ai_results').insert({
       claim_id: claimId,
       diagnosis_utama: r.diagnosis_utama, diagnosis_sekunder: r.diagnosis_sekunder, prosedur: r.prosedur,
       severity_sebelum: r.severity_sebelum, severity_sesudah: r.severity_sesudah,
@@ -760,7 +760,7 @@ async function saveCase(){
     });
     if(aiErr) throw aiErr;
 
-    await supabase.rpc('recompute_screening_flags');
+    await sb.rpc('recompute_screening_flags');
 
     editingClaimId = claimId;
     setStatus('Tersimpan.', false);
@@ -779,7 +779,7 @@ async function saveCase(){
 async function fetchAllClaimsWithResult(){
   // RLS otomatis membatasi baris yang kembali sesuai peran (lihat 02_rls.sql):
   // koder hanya melihat miliknya sendiri, verifikator/admin melihat semua.
-  const { data, error } = await supabase.from('claims')
+  const { data, error } = await sb.from('claims')
     .select('*, ai_results!inner(*)')
     .eq('ai_results.is_current', true)
     .order('created_at', { ascending: false });
@@ -822,13 +822,13 @@ async function renderArsip(){
 }
 
 async function updateStatusKlaim(id, newStatus){
-  const { error } = await supabase.from('claims').update({status_klaim:newStatus}).eq('id', id);
+  const { error } = await sb.from('claims').update({status_klaim:newStatus}).eq('id', id);
   if(error){ alert('Gagal memperbarui status: ' + error.message); }
   renderArsip();
 }
 
 async function reopenCase(id){
-  const { data: c, error } = await supabase.from('claims').select('*, ai_results!inner(*)').eq('id', id).eq('ai_results.is_current', true).single();
+  const { data: c, error } = await sb.from('claims').select('*, ai_results!inner(*)').eq('id', id).eq('ai_results.is_current', true).single();
   if(error || !c){ alert('Gagal membuka kasus.'); return; }
   editingClaimId = id;
   document.getElementById('f_rm').value = c.no_rm||'';
@@ -913,7 +913,7 @@ const SCREENING_LABELS = {
 };
 
 async function fetchScreening(){
-  const { data, error } = await supabase.from('screening_flags')
+  const { data, error } = await sb.from('screening_flags')
     .select('*, claims(no_rm, nama_pasien, dx_utama, dpjp, status_klaim)')
     .order('score', { ascending: false });
   if(error){ console.error(error); return []; }
