@@ -17,10 +17,9 @@ window.APP_CONFIG = {
   // analisa koding dan meneruskannya ke Anthropic API dengan API key
   // tersimpan di server (bukan di browser). Sesuaikan path-nya dengan
   // route yang benar-benar ada di worker Anda.
-  GATEWAY_URL: "https://skrining-inacbg-gateway.akhmad-tauhid.workers.dev/GANTI_DENGAN_PATH_YANG_BENAR",
-
+  GATEWAY_URL: "https://snowy-sun-899a.akhmad-tauhid.workers.dev",
   // Kalau gateway Anda mensyaratkan header otentikasi (mis. lisensi
   // internal RS, bukan lisensi pelanggan komersial), isi di sini dan
   // sesuaikan nama header-nya di app.js bagian runAnalysis().
-  GATEWAY_KEY: "GANTI_DENGAN_KUNCI_INTERNAL_JIKA_ADA"
+  GATEWAY_KEY: "rsam-v2-9x7k2m4p8q",
 };
