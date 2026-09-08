@@ -526,7 +526,7 @@ async function runAnalysis(){
       headers,
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
-        max_tokens: 4000,
+        max_tokens: 8000,
         system: systemPrompt,
         messages: [{ role: "user", content: contentBlocks }]
       })
@@ -539,9 +539,20 @@ async function runAnalysis(){
     try{ parsed = JSON.parse(clean); }
     catch(e){
       const match = clean.match(/\{[\s\S]*\}/);
-      if(match){ parsed = JSON.parse(match[0]); } else { throw new Error('Format respons AI tidak sesuai, coba lagi.'); }
+      if(match){
+        try{ parsed = JSON.parse(match[0]); }
+        catch(e2){
+          if(data.stop_reason === 'max_tokens'){
+            throw new Error('Hasil AI terpotong sebelum selesai (kasus ini terlalu kompleks/panjang untuk batas token saat ini). Coba lagi, atau kalau berulang, kurangi jumlah dokumen yang diunggah sekaligus / pecah jadi beberapa kali analisa.');
+          }
+          throw new Error('Format respons AI tidak sesuai, coba lagi.');
+        }
+      } else if(data.stop_reason === 'max_tokens'){
+        throw new Error('Hasil AI terpotong sebelum selesai (kasus ini terlalu kompleks/panjang untuk batas token saat ini). Coba lagi, atau kalau berulang, kurangi jumlah dokumen yang diunggah sekaligus / pecah jadi beberapa kali analisa.');
+      } else {
+        throw new Error('Format respons AI tidak sesuai, coba lagi.');
+      }
     }
-
     // Validasi kode yang diusulkan AI terhadap database resmi (sekarang lewat query,
     // dilakukan sekali per hasil analisa dan disimpan di cache map di memori).
     await primeCodeValidityCache(parsed);
