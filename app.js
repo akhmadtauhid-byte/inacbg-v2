@@ -480,6 +480,53 @@ function applyEkstraksiOtomatis(ekstraksi){
   return filledAny;
 }
 
+// ---------------------------------------------------------------------
+// Parsing hasil JSON dari AI, dengan beberapa lapis perbaikan otomatis
+// karena model kadang menghasilkan JSON yang hampir-valid (mis. ada
+// karakter baris baru mentah di dalam string, atau terpotong karena
+// batas token).
+// ---------------------------------------------------------------------
+function sanitizeJsonControlChars(str){
+  // Escape karakter kontrol (newline/tab/CR) yang muncul MENTAH di dalam
+  // string JSON (bukan yang sudah berupa \n literal dua-karakter) —
+  // penyebab umum error "Bad control character" / "Expected ',' or ']'".
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for(let i = 0; i < str.length; i++){
+    const ch = str[i];
+    if(inString){
+      if(escaped){ out += ch; escaped = false; continue; }
+      if(ch === '\\'){ out += ch; escaped = true; continue; }
+      if(ch === '"'){ inString = false; out += ch; continue; }
+      if(ch === '\n'){ out += '\\n'; continue; }
+      if(ch === '\r'){ out += '\\r'; continue; }
+      if(ch === '\t'){ out += '\\t'; continue; }
+      out += ch;
+    } else {
+      if(ch === '"'){ inString = true; out += ch; continue; }
+      out += ch;
+    }
+  }
+  return out;
+}
+
+function parseAiJson(clean, stopReason){
+  const attempts = [
+    () => JSON.parse(clean),
+    () => JSON.parse(sanitizeJsonControlChars(clean)),
+    () => { const m = clean.match(/\{[\s\S]*\}/); if(!m) throw new Error('no-match'); return JSON.parse(m[0]); },
+    () => { const m = sanitizeJsonControlChars(clean).match(/\{[\s\S]*\}/); if(!m) throw new Error('no-match'); return JSON.parse(m[0]); },
+  ];
+  for(const attempt of attempts){
+    try{ return attempt(); } catch(e){ /* coba cara berikutnya */ }
+  }
+  if(stopReason === 'max_tokens'){
+    throw new Error('Hasil AI terpotong sebelum selesai (kasus ini terlalu kompleks/panjang untuk batas token saat ini). Coba lagi, atau kalau berulang, kurangi jumlah dokumen yang diunggah sekaligus / pecah jadi beberapa kali analisa.');
+  }
+  throw new Error('Format respons AI tidak sesuai, coba lagi. Kalau berulang terus untuk dokumen yang sama, coba unggah ulang dokumennya atau pecah jadi beberapa kali analisa.');
+}
+
 async function runAnalysis(){
   const errBox = document.getElementById('errBox');
   const autoFillBox = document.getElementById('autoFillNotice');
@@ -526,7 +573,7 @@ async function runAnalysis(){
       headers,
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
-        max_tokens: 8000,
+        max_tokens: 16000,
         system: systemPrompt,
         messages: [{ role: "user", content: contentBlocks }]
       })
@@ -535,24 +582,8 @@ async function runAnalysis(){
     const data = await response.json();
     const textBlocks = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
     let clean = textBlocks.trim().replace(/^```json/i,'').replace(/^```/,'').replace(/```$/,'').trim();
-    let parsed;
-    try{ parsed = JSON.parse(clean); }
-    catch(e){
-      const match = clean.match(/\{[\s\S]*\}/);
-      if(match){
-        try{ parsed = JSON.parse(match[0]); }
-        catch(e2){
-          if(data.stop_reason === 'max_tokens'){
-            throw new Error('Hasil AI terpotong sebelum selesai (kasus ini terlalu kompleks/panjang untuk batas token saat ini). Coba lagi, atau kalau berulang, kurangi jumlah dokumen yang diunggah sekaligus / pecah jadi beberapa kali analisa.');
-          }
-          throw new Error('Format respons AI tidak sesuai, coba lagi.');
-        }
-      } else if(data.stop_reason === 'max_tokens'){
-        throw new Error('Hasil AI terpotong sebelum selesai (kasus ini terlalu kompleks/panjang untuk batas token saat ini). Coba lagi, atau kalau berulang, kurangi jumlah dokumen yang diunggah sekaligus / pecah jadi beberapa kali analisa.');
-      } else {
-        throw new Error('Format respons AI tidak sesuai, coba lagi.');
-      }
-    }
+    const parsed = parseAiJson(clean, data.stop_reason);
+
     // Validasi kode yang diusulkan AI terhadap database resmi (sekarang lewat query,
     // dilakukan sekali per hasil analisa dan disimpan di cache map di memori).
     await primeCodeValidityCache(parsed);
@@ -654,6 +685,7 @@ ATURAN KETAT:
 - Estimasi tarif WAJIB berupa rentang (min-max) yang mencerminkan ketidakpastian, bukan angka tunggal presisi tinggi.
 - "rekomendasi_penunjang" HARUS selalu berbasis kaitan klinis yang jelas dengan data yang ada, bersifat SARAN untuk pertimbangan DPJP, dan tidak boleh diformulasikan sebagai perintah/kepastian diagnostik.
 - Tulis semua output dalam Bahasa Indonesia.
+- WAJIB VALID JSON: JANGAN PERNAH memakai tanda kutip dua (") di DALAM isi teks value apa pun (catatan, alasan_klinis, saran, deskripsi, dll). Kalau perlu mengutip istilah/kalimat, gunakan tanda kutip satu (') atau tanda kutip miring “ ”, JANGAN tanda kutip dua lurus biasa. Jangan sisipkan baris baru mentah di dalam satu value string — tulis tiap value sebagai satu baris teks (kalau perlu pemisah, pakai "; " atau "\\n" berupa escape, bukan enter langsung). Sebelum menjawab, periksa ulang bahwa seluruh output adalah satu JSON valid yang bisa langsung diparse.
 
 FORMAT OUTPUT: HANYA JSON valid, tanpa teks lain, tanpa markdown fence:
 {
@@ -714,7 +746,6 @@ ${input.n_gambar > 0 ? `Terlampir ${input.n_gambar} gambar pendukung (foto resum
 
 Telaah kasus ini sesuai instruksi sistem dan kembalikan hanya JSON sesuai format yang ditentukan.`;
 }
-
 // ---------------------------------------------------------------------
 // RENDER HASIL ANALISA
 // ---------------------------------------------------------------------
@@ -859,6 +890,7 @@ function renderResult(data, manual, inputUsed){
   `;
   document.getElementById('resultBody').innerHTML = html;
 }
+
 // ---------------------------------------------------------------------
 // SIMPAN KASUS -> Supabase (claims + ai_results), lalu recompute skrining
 // ---------------------------------------------------------------------
